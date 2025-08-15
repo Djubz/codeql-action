@@ -4,7 +4,7 @@ import * as retry from "@octokit/plugin-retry";
 import consoleLogLevel from "console-log-level";
 
 import { getActionVersion, getRequiredInput } from "./actions-util";
-import { parseRepositoryNwo } from "./repository";
+import { getRepositoryNwo } from "./repository";
 import {
   ConfigurationError,
   getRequiredEnvParam,
@@ -85,6 +85,7 @@ export async function getGitHubVersionFromApi(
 
   // Doesn't strictly have to be the meta endpoint as we're only
   // using the response headers which are available on every request.
+  // eslint-disable-next-line @typescript-eslint/no-unsafe-call
   const response = await apiClient.rest.meta.get();
 
   // This happens on dotcom, although we expect to have already returned in that
@@ -122,25 +123,32 @@ export async function getGitHubVersion(): Promise<GitHubVersion> {
  * Get the path of the currently executing workflow relative to the repository root.
  */
 export async function getWorkflowRelativePath(): Promise<string> {
-  const repo_nwo = getRequiredEnvParam("GITHUB_REPOSITORY").split("/");
-  const owner = repo_nwo[0];
-  const repo = repo_nwo[1];
+  const repo_nwo = getRepositoryNwo();
   const run_id = Number(getRequiredEnvParam("GITHUB_RUN_ID"));
 
   const apiClient = getApiClient();
   const runsResponse = await apiClient.request(
     "GET /repos/:owner/:repo/actions/runs/:run_id?exclude_pull_requests=true",
     {
-      owner,
-      repo,
+      owner: repo_nwo.owner,
+      repo: repo_nwo.repo,
       run_id,
     },
   );
   const workflowUrl = runsResponse.data.workflow_url;
 
+  const requiredWorkflowRegex =
+    /\/repos\/[^/]+\/[^/]+\/actions\/required_workflows\/[^/]+/;
+  if (!workflowUrl || requiredWorkflowRegex.test(workflowUrl as string)) {
+    // For required workflows, the workflowUrl is invalid so we cannot fetch more informations
+    // about the workflow.
+    // However, the path is available in the original response.
+    return runsResponse.data.path as string;
+  }
+
   const workflowResponse = await apiClient.request(`GET ${workflowUrl}`);
 
-  return workflowResponse.data.path;
+  return workflowResponse.data.path as string;
 }
 
 /**
@@ -208,9 +216,7 @@ export async function listActionsCaches(
   key: string,
   ref: string,
 ): Promise<ActionsCacheItem[]> {
-  const repositoryNwo = parseRepositoryNwo(
-    getRequiredEnvParam("GITHUB_REPOSITORY"),
-  );
+  const repositoryNwo = getRepositoryNwo();
 
   return await getApiClient().paginate(
     "GET /repos/{owner}/{repo}/actions/caches",
@@ -225,9 +231,7 @@ export async function listActionsCaches(
 
 /** Delete an Actions cache item by its ID. */
 export async function deleteActionsCache(id: number) {
-  const repositoryNwo = parseRepositoryNwo(
-    getRequiredEnvParam("GITHUB_REPOSITORY"),
-  );
+  const repositoryNwo = getRepositoryNwo();
 
   await getApiClient().rest.actions.deleteActionsCacheById({
     owner: repositoryNwo.owner,
@@ -239,11 +243,19 @@ export async function deleteActionsCache(id: number) {
 export function wrapApiConfigurationError(e: unknown) {
   if (isHTTPError(e)) {
     if (
-      e.message.includes("API rate limit exceeded for site ID installation") ||
+      e.message.includes("API rate limit exceeded for installation") ||
       e.message.includes("commit not found") ||
-      /^ref .* not found in this repository$/.test(e.message)
+      e.message.includes("Resource not accessible by integration") ||
+      /ref .* not found in this repository/.test(e.message)
     ) {
       return new ConfigurationError(e.message);
+    } else if (
+      e.message.includes("Bad credentials") ||
+      e.message.includes("Not Found")
+    ) {
+      return new ConfigurationError(
+        "Please check that your token is valid and has the required permissions: contents: read, security-events: write",
+      );
     }
   }
   return e;

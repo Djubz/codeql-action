@@ -6,7 +6,6 @@ import test from "ava";
 import * as configUtils from "./config-utils";
 import { Language } from "./languages";
 import {
-  createFeatures,
   createTestConfig,
   mockCodeQLVersion,
   setupTests,
@@ -30,17 +29,13 @@ test("getCombinedTracerConfig - return undefined when no languages are traced la
     // No traced languages
     config.languages = [Language.javascript, Language.python];
     t.deepEqual(
-      await getCombinedTracerConfig(
-        mockCodeQLVersion("1.0.0"),
-        config,
-        createFeatures([]),
-      ),
+      await getCombinedTracerConfig(mockCodeQLVersion("1.0.0"), config),
       undefined,
     );
   });
 });
 
-test("getCombinedTracerConfig - with start-tracing.json environment file", async (t) => {
+test("getCombinedTracerConfig", async (t) => {
   await util.withTmpDir(async (tmpDir) => {
     const config = getTestConfig(tmpDir);
 
@@ -49,8 +44,8 @@ test("getCombinedTracerConfig - with start-tracing.json environment file", async
       process.platform === "win32"
         ? "win64"
         : process.platform === "darwin"
-        ? "osx64"
-        : "linux64";
+          ? "osx64"
+          : "linux64";
     const startTracingEnv = {
       foo: "bar",
       CODEQL_DIST: bundlePath,
@@ -72,68 +67,6 @@ test("getCombinedTracerConfig - with start-tracing.json environment file", async
     const result = await getCombinedTracerConfig(
       mockCodeQLVersion("1.0.0"),
       config,
-      createFeatures([]),
-    );
-    t.notDeepEqual(result, undefined);
-
-    const expectedEnv = startTracingEnv;
-
-    if (process.platform === "win32") {
-      expectedEnv["CODEQL_RUNNER"] = path.join(
-        bundlePath,
-        "tools/win64/runner.exe",
-      );
-    } else if (process.platform === "darwin") {
-      expectedEnv["CODEQL_RUNNER"] = path.join(
-        bundlePath,
-        "tools/osx64/runner",
-      );
-    } else {
-      expectedEnv["CODEQL_RUNNER"] = path.join(
-        bundlePath,
-        "tools/linux64/runner",
-      );
-    }
-
-    t.deepEqual(result, {
-      env: expectedEnv,
-    });
-  });
-});
-
-test("getCombinedTracerConfig - with SetsCodeqlRunnerEnvVar feature enabled in CLI", async (t) => {
-  await util.withTmpDir(async (tmpDir) => {
-    const config = getTestConfig(tmpDir);
-
-    const bundlePath = path.join(tmpDir, "bundle");
-    const codeqlPlatform =
-      process.platform === "win32"
-        ? "win64"
-        : process.platform === "darwin"
-        ? "osx64"
-        : "linux64";
-    const startTracingEnv = {
-      foo: "bar",
-      CODEQL_DIST: bundlePath,
-      CODEQL_PLATFORM: codeqlPlatform,
-    };
-
-    const tracingEnvironmentDir = path.join(
-      config.dbLocation,
-      "temp",
-      "tracingEnvironment",
-    );
-    fs.mkdirSync(tracingEnvironmentDir, { recursive: true });
-    const startTracingJson = path.join(
-      tracingEnvironmentDir,
-      "start-tracing.json",
-    );
-    fs.writeFileSync(startTracingJson, JSON.stringify(startTracingEnv));
-
-    const result = await getCombinedTracerConfig(
-      mockCodeQLVersion("1.0.0", { setsCodeqlRunnerEnvVar: true }),
-      config,
-      createFeatures([]),
     );
     t.notDeepEqual(result, undefined);
 

@@ -7,6 +7,7 @@ import { getApiClient } from "./api-client";
 import type { CodeQL } from "./codeql";
 import * as defaults from "./defaults.json";
 import { Logger } from "./logging";
+import { CODEQL_OVERLAY_MINIMUM_VERSION } from "./overlay-database-utils";
 import { RepositoryNwo } from "./repository";
 import { ToolsFeature } from "./tools-features";
 import * as util from "./util";
@@ -15,15 +16,9 @@ const DEFAULT_VERSION_FEATURE_FLAG_PREFIX = "default_codeql_version_";
 const DEFAULT_VERSION_FEATURE_FLAG_SUFFIX = "_enabled";
 
 /**
- * Versions 2.13.4+ of the CodeQL CLI have an associated CodeQL Bundle release that is semantically versioned.
+ * The first version of the CodeQL Bundle that shipped with zstd-compressed bundles.
  */
-export const CODEQL_VERSION_BUNDLE_SEMANTICALLY_VERSIONED = "2.13.4";
-
-/**
- * Evaluator fine-grained parallelism (aka intra-layer parallelism) is only safe to enable in 2.15.1 onwards.
- * (Some earlier versions recognize the command-line flag, but they contain a bug which makes it unsafe to use).
- */
-export const CODEQL_VERSION_FINE_GRAINED_PARALLELISM = "2.15.1";
+export const CODEQL_VERSION_ZSTD_BUNDLE = "2.19.0";
 
 export interface CodeQLDefaultVersionInfo {
   cliVersion: string;
@@ -42,17 +37,47 @@ export interface FeatureEnablement {
 /**
  * Feature enablement as returned by the GitHub API endpoint.
  *
+ * Do not include the `codeql_action_` prefix as this is stripped by the API
+ * endpoint.
+ *
  * Legacy features should end with `_enabled`.
  */
 export enum Feature {
-  AutobuildDirectTracing = "autobuild_direct_tracing",
   CleanupTrapCaches = "cleanup_trap_caches",
+  CppBuildModeNone = "cpp_build_mode_none",
   CppDependencyInstallation = "cpp_dependency_installation_enabled",
-  CppTrapCachingEnabled = "cpp_trap_caching_enabled",
+  DiffInformedQueries = "diff_informed_queries",
+  DisableCombineSarifFiles = "disable_combine_sarif_files",
+  DisableCsharpBuildless = "disable_csharp_buildless",
   DisableJavaBuildlessEnabled = "disable_java_buildless_enabled",
   DisableKotlinAnalysisEnabled = "disable_kotlin_analysis_enabled",
   ExportDiagnosticsEnabled = "export_diagnostics_enabled",
+  ExtractToToolcache = "extract_to_toolcache",
+  OverlayAnalysis = "overlay_analysis",
+  OverlayAnalysisActions = "overlay_analysis_actions",
+  OverlayAnalysisCodeScanningActions = "overlay_analysis_code_scanning_actions",
+  OverlayAnalysisCodeScanningCpp = "overlay_analysis_code_scanning_cpp",
+  OverlayAnalysisCodeScanningCsharp = "overlay_analysis_code_scanning_csharp",
+  OverlayAnalysisCodeScanningGo = "overlay_analysis_code_scanning_go",
+  OverlayAnalysisCodeScanningJava = "overlay_analysis_code_scanning_java",
+  OverlayAnalysisCodeScanningJavascript = "overlay_analysis_code_scanning_javascript",
+  OverlayAnalysisCodeScanningPython = "overlay_analysis_code_scanning_python",
+  OverlayAnalysisCodeScanningRuby = "overlay_analysis_code_scanning_ruby",
+  OverlayAnalysisCodeScanningRust = "overlay_analysis_code_scanning_rust",
+  OverlayAnalysisCodeScanningSwift = "overlay_analysis_code_scanning_swift",
+  OverlayAnalysisCpp = "overlay_analysis_cpp",
+  OverlayAnalysisCsharp = "overlay_analysis_csharp",
+  OverlayAnalysisGo = "overlay_analysis_go",
+  OverlayAnalysisJava = "overlay_analysis_java",
+  OverlayAnalysisJavascript = "overlay_analysis_javascript",
+  OverlayAnalysisPython = "overlay_analysis_python",
+  OverlayAnalysisRuby = "overlay_analysis_ruby",
+  OverlayAnalysisRust = "overlay_analysis_rust",
+  OverlayAnalysisSwift = "overlay_analysis_swift",
+  PythonDefaultIsToNotExtractStdlib = "python_default_is_to_not_extract_stdlib",
   QaTelemetryEnabled = "qa_telemetry_enabled",
+  RustAnalysis = "rust_analysis",
+  ZstdBundleStreamingExtraction = "zstd_bundle_streaming_extraction",
 }
 
 export const featureConfig: Record<
@@ -86,15 +111,19 @@ export const featureConfig: Record<
     toolsFeature?: ToolsFeature;
   }
 > = {
-  [Feature.AutobuildDirectTracing]: {
-    defaultValue: false,
-    envVar: "CODEQL_ACTION_AUTOBUILD_BUILD_MODE_DIRECT_TRACING",
-    minimumVersion: undefined,
-    toolsFeature: ToolsFeature.TraceCommandUseBuildMode,
-  },
   [Feature.CleanupTrapCaches]: {
     defaultValue: false,
     envVar: "CODEQL_ACTION_CLEANUP_TRAP_CACHES",
+    minimumVersion: undefined,
+  },
+  [Feature.CppBuildModeNone]: {
+    defaultValue: false,
+    envVar: "CODEQL_EXTRACTOR_CPP_BUILD_MODE_NONE",
+    minimumVersion: undefined,
+  },
+  [Feature.ZstdBundleStreamingExtraction]: {
+    defaultValue: false,
+    envVar: "CODEQL_ACTION_ZSTD_BUNDLE_STREAMING_EXTRACTION",
     minimumVersion: undefined,
   },
   [Feature.CppDependencyInstallation]: {
@@ -103,11 +132,20 @@ export const featureConfig: Record<
     legacyApi: true,
     minimumVersion: "2.15.0",
   },
-  [Feature.CppTrapCachingEnabled]: {
+  [Feature.DiffInformedQueries]: {
+    defaultValue: true,
+    envVar: "CODEQL_ACTION_DIFF_INFORMED_QUERIES",
+    minimumVersion: "2.21.0",
+  },
+  [Feature.DisableCombineSarifFiles]: {
     defaultValue: false,
-    envVar: "CODEQL_CPP_TRAP_CACHING",
-    legacyApi: true,
-    minimumVersion: "2.16.1",
+    envVar: "CODEQL_ACTION_DISABLE_COMBINE_SARIF_FILES",
+    minimumVersion: undefined,
+  },
+  [Feature.DisableCsharpBuildless]: {
+    defaultValue: false,
+    envVar: "CODEQL_ACTION_DISABLE_CSHARP_BUILDLESS",
+    minimumVersion: undefined,
   },
   [Feature.DisableJavaBuildlessEnabled]: {
     defaultValue: false,
@@ -126,6 +164,127 @@ export const featureConfig: Record<
     envVar: "CODEQL_ACTION_EXPORT_DIAGNOSTICS",
     legacyApi: true,
     minimumVersion: undefined,
+  },
+  [Feature.ExtractToToolcache]: {
+    defaultValue: false,
+    envVar: "CODEQL_ACTION_EXTRACT_TOOLCACHE",
+    minimumVersion: undefined,
+  },
+  [Feature.OverlayAnalysis]: {
+    defaultValue: false,
+    envVar: "CODEQL_ACTION_OVERLAY_ANALYSIS",
+    minimumVersion: CODEQL_OVERLAY_MINIMUM_VERSION,
+  },
+  [Feature.OverlayAnalysisActions]: {
+    defaultValue: false,
+    envVar: "CODEQL_ACTION_OVERLAY_ANALYSIS_ACTIONS",
+    minimumVersion: undefined,
+  },
+  [Feature.OverlayAnalysisCodeScanningActions]: {
+    defaultValue: false,
+    envVar: "CODEQL_ACTION_OVERLAY_ANALYSIS_CODE_SCANNING_ACTIONS",
+    minimumVersion: undefined,
+  },
+  [Feature.OverlayAnalysisCodeScanningCpp]: {
+    defaultValue: false,
+    envVar: "CODEQL_ACTION_OVERLAY_ANALYSIS_CODE_SCANNING_CPP",
+    minimumVersion: undefined,
+  },
+  [Feature.OverlayAnalysisCodeScanningCsharp]: {
+    defaultValue: false,
+    envVar: "CODEQL_ACTION_OVERLAY_ANALYSIS_CODE_SCANNING_CSHARP",
+    minimumVersion: undefined,
+  },
+  [Feature.OverlayAnalysisCodeScanningGo]: {
+    defaultValue: false,
+    envVar: "CODEQL_ACTION_OVERLAY_ANALYSIS_CODE_SCANNING_GO",
+    minimumVersion: undefined,
+  },
+  [Feature.OverlayAnalysisCodeScanningJava]: {
+    defaultValue: false,
+    envVar: "CODEQL_ACTION_OVERLAY_ANALYSIS_CODE_SCANNING_JAVA",
+    minimumVersion: undefined,
+  },
+  [Feature.OverlayAnalysisCodeScanningJavascript]: {
+    defaultValue: false,
+    envVar: "CODEQL_ACTION_OVERLAY_ANALYSIS_CODE_SCANNING_JAVASCRIPT",
+    minimumVersion: undefined,
+  },
+  [Feature.OverlayAnalysisCodeScanningPython]: {
+    defaultValue: false,
+    envVar: "CODEQL_ACTION_OVERLAY_ANALYSIS_CODE_SCANNING_PYTHON",
+    minimumVersion: undefined,
+  },
+  [Feature.OverlayAnalysisCodeScanningRuby]: {
+    defaultValue: false,
+    envVar: "CODEQL_ACTION_OVERLAY_ANALYSIS_CODE_SCANNING_RUBY",
+    minimumVersion: undefined,
+  },
+  [Feature.OverlayAnalysisCodeScanningRust]: {
+    defaultValue: false,
+    envVar: "CODEQL_ACTION_OVERLAY_ANALYSIS_CODE_SCANNING_RUST",
+    minimumVersion: undefined,
+  },
+  [Feature.OverlayAnalysisCodeScanningSwift]: {
+    defaultValue: false,
+    envVar: "CODEQL_ACTION_OVERLAY_ANALYSIS_CODE_SCANNING_SWIFT",
+    minimumVersion: undefined,
+  },
+  [Feature.OverlayAnalysisCpp]: {
+    defaultValue: false,
+    envVar: "CODEQL_ACTION_OVERLAY_ANALYSIS_CPP",
+    minimumVersion: undefined,
+  },
+  [Feature.OverlayAnalysisCsharp]: {
+    defaultValue: false,
+    envVar: "CODEQL_ACTION_OVERLAY_ANALYSIS_CSHARP",
+    minimumVersion: undefined,
+  },
+  [Feature.OverlayAnalysisGo]: {
+    defaultValue: false,
+    envVar: "CODEQL_ACTION_OVERLAY_ANALYSIS_GO",
+    minimumVersion: undefined,
+  },
+  [Feature.OverlayAnalysisJava]: {
+    defaultValue: false,
+    envVar: "CODEQL_ACTION_OVERLAY_ANALYSIS_JAVA",
+    minimumVersion: undefined,
+  },
+  [Feature.OverlayAnalysisJavascript]: {
+    defaultValue: false,
+    envVar: "CODEQL_ACTION_OVERLAY_ANALYSIS_JAVASCRIPT",
+    minimumVersion: undefined,
+  },
+  [Feature.OverlayAnalysisPython]: {
+    defaultValue: false,
+    envVar: "CODEQL_ACTION_OVERLAY_ANALYSIS_PYTHON",
+    minimumVersion: undefined,
+  },
+  [Feature.OverlayAnalysisRuby]: {
+    defaultValue: false,
+    envVar: "CODEQL_ACTION_OVERLAY_ANALYSIS_RUBY",
+    minimumVersion: undefined,
+  },
+  [Feature.OverlayAnalysisRust]: {
+    defaultValue: false,
+    envVar: "CODEQL_ACTION_OVERLAY_ANALYSIS_RUST",
+    minimumVersion: undefined,
+  },
+  [Feature.OverlayAnalysisSwift]: {
+    defaultValue: false,
+    envVar: "CODEQL_ACTION_OVERLAY_ANALYSIS_SWIFT",
+    minimumVersion: undefined,
+  },
+  [Feature.PythonDefaultIsToNotExtractStdlib]: {
+    defaultValue: false,
+    envVar: "CODEQL_ACTION_DISABLE_PYTHON_STANDARD_LIBRARY_EXTRACTION",
+    minimumVersion: undefined,
+    toolsFeature: ToolsFeature.PythonDefaultIsToNotExtractStdlib,
+  },
+  [Feature.RustAnalysis]: {
+    defaultValue: false,
+    envVar: "CODEQL_ACTION_RUST_ANALYSIS",
+    minimumVersion: "2.19.3",
   },
   [Feature.QaTelemetryEnabled]: {
     defaultValue: false,
@@ -331,13 +490,7 @@ class GitHubFeatureFlags {
       .map(([f, isEnabled]) =>
         isEnabled ? this.getCliVersionFromFeatureFlag(f) : undefined,
       )
-      .filter(
-        (f) =>
-          f !== undefined &&
-          // Only consider versions that have semantically versioned bundles.
-          semver.gte(f, CODEQL_VERSION_BUNDLE_SEMANTICALLY_VERSIONED),
-      )
-      .map((f) => f as string);
+      .filter((f): f is string => f !== undefined);
 
     if (enabledFeatureFlagCliVersions.length === 0) {
       // We expect at least one default CLI version to be enabled on Dotcom at any time. However if
@@ -429,7 +582,9 @@ class GitHubFeatureFlags {
         this.logger.debug(
           `Loading feature flags from ${this.featureFlagsFile}`,
         );
-        return JSON.parse(fs.readFileSync(this.featureFlagsFile, "utf8"));
+        return JSON.parse(
+          fs.readFileSync(this.featureFlagsFile, "utf8"),
+        ) as GitHubFeatureFlagsApiResponse;
       }
     } catch (e) {
       this.logger.warning(
@@ -454,7 +609,10 @@ class GitHubFeatureFlags {
 
   private async loadApiResponse(): Promise<GitHubFeatureFlagsApiResponse> {
     // Do nothing when not running against github.com
-    if (this.gitHubVersion.type !== util.GitHubVariant.DOTCOM) {
+    if (
+      this.gitHubVersion.type !== util.GitHubVariant.DOTCOM &&
+      this.gitHubVersion.type !== util.GitHubVariant.GHE_DOTCOM
+    ) {
       this.logger.debug(
         "Not running against github.com. Disabling all toggleable features.",
       );
@@ -464,18 +622,29 @@ class GitHubFeatureFlags {
     try {
       const featuresToRequest = Object.entries(featureConfig)
         .filter(([, config]) => !config.legacyApi)
-        .map(([f]) => f)
-        .join(",");
+        .map(([f]) => f);
 
-      const response = await getApiClient().request(
-        "GET /repos/:owner/:repo/code-scanning/codeql-action/features",
-        {
-          owner: this.repositoryNwo.owner,
-          repo: this.repositoryNwo.repo,
-          features: featuresToRequest,
-        },
-      );
-      const remoteFlags = response.data as GitHubFeatureFlagsApiResponse;
+      const FEATURES_PER_REQUEST = 25;
+      const featureChunks: string[][] = [];
+      while (featuresToRequest.length > 0) {
+        featureChunks.push(featuresToRequest.splice(0, FEATURES_PER_REQUEST));
+      }
+
+      let remoteFlags: GitHubFeatureFlagsApiResponse = {};
+
+      for (const chunk of featureChunks) {
+        const response = await getApiClient().request(
+          "GET /repos/:owner/:repo/code-scanning/codeql-action/features",
+          {
+            owner: this.repositoryNwo.owner,
+            repo: this.repositoryNwo.repo,
+            features: chunk.join(","),
+          },
+        );
+        const chunkFlags = response.data as GitHubFeatureFlagsApiResponse;
+        remoteFlags = { ...remoteFlags, ...chunkFlags };
+      }
+
       this.logger.debug(
         "Loaded the following default values for the feature flags from the Code Scanning API:",
       );

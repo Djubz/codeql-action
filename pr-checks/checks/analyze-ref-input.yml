@@ -1,6 +1,7 @@
 name: "Analyze: 'ref' and 'sha' from inputs"
 description: "Checks that specifying 'ref' and 'sha' as inputs works"
 versions: ["default"]
+installGo: "true"
 steps:
   - uses: ./../action/init
     with:
@@ -12,6 +13,5 @@ steps:
     run: ./build.sh
   - uses: ./../action/analyze
     with:
-      upload-database: false
       ref: 'refs/heads/main'
       sha: '5e235361806c361d4d3f8859e3c897658025a9a2'

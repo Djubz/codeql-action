@@ -3,8 +3,9 @@ import * as path from "path";
 
 import test from "ava";
 
+import { Feature } from "./feature-flags";
 import { getRunnerLogger, Logger } from "./logging";
-import { setupTests } from "./testing-utils";
+import { createFeatures, setupTests } from "./testing-utils";
 import * as uploadLib from "./upload-lib";
 import { GitHubVariant, initializeEnvironment, withTmpDir } from "./util";
 
@@ -17,14 +18,22 @@ test.beforeEach(() => {
 test("validateSarifFileSchema - valid", (t) => {
   const inputFile = `${__dirname}/../src/testdata/valid-sarif.sarif`;
   t.notThrows(() =>
-    uploadLib.validateSarifFileSchema(inputFile, getRunnerLogger(true)),
+    uploadLib.validateSarifFileSchema(
+      uploadLib.readSarifFile(inputFile),
+      inputFile,
+      getRunnerLogger(true),
+    ),
   );
 });
 
 test("validateSarifFileSchema - invalid", (t) => {
   const inputFile = `${__dirname}/../src/testdata/invalid-sarif.sarif`;
   t.throws(() =>
-    uploadLib.validateSarifFileSchema(inputFile, getRunnerLogger(true)),
+    uploadLib.validateSarifFileSchema(
+      uploadLib.readSarifFile(inputFile),
+      inputFile,
+      getRunnerLogger(true),
+    ),
   );
 });
 
@@ -50,9 +59,8 @@ test("validate correct payload used for push, PR merge commit, and PR head", asy
   process.env["GITHUB_EVENT_NAME"] = "pull_request";
   process.env["GITHUB_SHA"] = "commit";
   process.env["GITHUB_BASE_REF"] = "master";
-  process.env[
-    "GITHUB_EVENT_PATH"
-  ] = `${__dirname}/../src/testdata/pull_request.json`;
+  process.env["GITHUB_EVENT_PATH"] =
+    `${__dirname}/../src/testdata/pull_request.json`;
   const prMergePayload: any = uploadLib.buildPayload(
     "commit",
     "refs/pull/123/merge",
@@ -115,13 +123,30 @@ test("finding SARIF files", async (t) => {
       "file",
     );
 
-    const sarifFiles = uploadLib.findSarifFilesInDir(tmpDir);
+    // add some `.quality.sarif` files that should be ignored, unless we look for them specifically
+    fs.writeFileSync(path.join(tmpDir, "a.quality.sarif"), "");
+    fs.writeFileSync(path.join(tmpDir, "dir1", "b.quality.sarif"), "");
+
+    const sarifFiles = uploadLib.findSarifFilesInDir(
+      tmpDir,
+      uploadLib.CodeScanningTarget.sarifPredicate,
+    );
 
     t.deepEqual(sarifFiles, [
       path.join(tmpDir, "a.sarif"),
       path.join(tmpDir, "b.sarif"),
       path.join(tmpDir, "dir1", "d.sarif"),
       path.join(tmpDir, "dir1", "dir2", "e.sarif"),
+    ]);
+
+    const qualitySarifFiles = uploadLib.findSarifFilesInDir(
+      tmpDir,
+      uploadLib.CodeQualityTarget.sarifPredicate,
+    );
+
+    t.deepEqual(qualitySarifFiles, [
+      path.join(tmpDir, "a.quality.sarif"),
+      path.join(tmpDir, "dir1", "b.quality.sarif"),
     ]);
   });
 });
@@ -306,6 +331,16 @@ test("validateUniqueCategory for multiple runs", (t) => {
   t.throws(() => uploadLib.validateUniqueCategory(sarif2));
 });
 
+test("validateUniqueCategory with different prefixes", (t) => {
+  t.notThrows(() => uploadLib.validateUniqueCategory(createMockSarif()));
+  t.notThrows(() =>
+    uploadLib.validateUniqueCategory(
+      createMockSarif(),
+      uploadLib.CodeQualityTarget.sentinelPrefix,
+    ),
+  );
+});
+
 test("accept results with invalid artifactLocation.uri value", (t) => {
   const loggedMessages: string[] = [];
   const mockLogger = {
@@ -315,11 +350,16 @@ test("accept results with invalid artifactLocation.uri value", (t) => {
   } as Logger;
 
   const sarifFile = `${__dirname}/../src/testdata/with-invalid-uri.sarif`;
-  uploadLib.validateSarifFileSchema(sarifFile, mockLogger);
+  uploadLib.validateSarifFileSchema(
+    uploadLib.readSarifFile(sarifFile),
+    sarifFile,
+    mockLogger,
+  );
 
-  t.deepEqual(loggedMessages.length, 2);
+  t.deepEqual(loggedMessages.length, 3);
   t.deepEqual(
     loggedMessages[1],
+    "Warning: 'not a valid URI' is not a valid URI in 'instance.runs[0].tool.driver.rules[0].helpUri'.",
     "Warning: 'not a valid URI' is not a valid URI in 'instance.runs[0].results[0].locations[0].physicalLocation.artifactLocation.uri'.",
   );
 });
@@ -354,6 +394,18 @@ test("shouldShowCombineSarifFilesDeprecationWarning when on GHES 3.14", async (t
       {
         type: GitHubVariant.GHES,
         version: "3.14.0",
+      },
+    ),
+  );
+});
+
+test("shouldShowCombineSarifFilesDeprecationWarning when on GHES 3.16 pre", async (t) => {
+  t.true(
+    await uploadLib.shouldShowCombineSarifFilesDeprecationWarning(
+      [createMockSarif("abc", "def"), createMockSarif("abc", "def")],
+      {
+        type: GitHubVariant.GHES,
+        version: "3.16.0.pre1",
       },
     ),
   );
@@ -403,6 +455,214 @@ test("shouldShowCombineSarifFilesDeprecationWarning when environment variable is
       },
     ),
   );
+});
+
+test("throwIfCombineSarifFilesDisabled when on dotcom with feature flag", async (t) => {
+  await t.throwsAsync(
+    uploadLib.throwIfCombineSarifFilesDisabled(
+      [createMockSarif("abc", "def"), createMockSarif("abc", "def")],
+      createFeatures([Feature.DisableCombineSarifFiles]),
+      {
+        type: GitHubVariant.DOTCOM,
+      },
+    ),
+    {
+      message:
+        /The CodeQL Action does not support uploading multiple SARIF runs with the same category/,
+    },
+  );
+});
+
+test("throwIfCombineSarifFilesDisabled when on dotcom without feature flag", async (t) => {
+  await t.notThrowsAsync(
+    uploadLib.throwIfCombineSarifFilesDisabled(
+      [createMockSarif("abc", "def"), createMockSarif("abc", "def")],
+      createFeatures([]),
+      {
+        type: GitHubVariant.DOTCOM,
+      },
+    ),
+  );
+});
+
+test("throwIfCombineSarifFilesDisabled when on GHES 3.13", async (t) => {
+  await t.notThrowsAsync(
+    uploadLib.throwIfCombineSarifFilesDisabled(
+      [createMockSarif("abc", "def"), createMockSarif("abc", "def")],
+      createFeatures([]),
+      {
+        type: GitHubVariant.GHES,
+        version: "3.13.2",
+      },
+    ),
+  );
+});
+
+test("throwIfCombineSarifFilesDisabled when on GHES 3.14", async (t) => {
+  await t.notThrowsAsync(
+    uploadLib.throwIfCombineSarifFilesDisabled(
+      [createMockSarif("abc", "def"), createMockSarif("abc", "def")],
+      createFeatures([]),
+      {
+        type: GitHubVariant.GHES,
+        version: "3.14.0",
+      },
+    ),
+  );
+});
+
+test("throwIfCombineSarifFilesDisabled when on GHES 3.17", async (t) => {
+  await t.notThrowsAsync(
+    uploadLib.throwIfCombineSarifFilesDisabled(
+      [createMockSarif("abc", "def"), createMockSarif("abc", "def")],
+      createFeatures([]),
+      {
+        type: GitHubVariant.GHES,
+        version: "3.17.0",
+      },
+    ),
+  );
+});
+
+test("throwIfCombineSarifFilesDisabled when on GHES 3.18 pre", async (t) => {
+  await t.throwsAsync(
+    uploadLib.throwIfCombineSarifFilesDisabled(
+      [createMockSarif("abc", "def"), createMockSarif("abc", "def")],
+      createFeatures([]),
+      {
+        type: GitHubVariant.GHES,
+        version: "3.18.0.pre1",
+      },
+    ),
+    {
+      message:
+        /The CodeQL Action does not support uploading multiple SARIF runs with the same category/,
+    },
+  );
+});
+
+test("throwIfCombineSarifFilesDisabled when on GHES 3.18 alpha", async (t) => {
+  await t.throwsAsync(
+    uploadLib.throwIfCombineSarifFilesDisabled(
+      [createMockSarif("abc", "def"), createMockSarif("abc", "def")],
+      createFeatures([]),
+      {
+        type: GitHubVariant.GHES,
+        version: "3.18.0-alpha.1",
+      },
+    ),
+    {
+      message:
+        /The CodeQL Action does not support uploading multiple SARIF runs with the same category/,
+    },
+  );
+});
+
+test("throwIfCombineSarifFilesDisabled when on GHES 3.18", async (t) => {
+  await t.throwsAsync(
+    uploadLib.throwIfCombineSarifFilesDisabled(
+      [createMockSarif("abc", "def"), createMockSarif("abc", "def")],
+      createFeatures([]),
+      {
+        type: GitHubVariant.GHES,
+        version: "3.18.0",
+      },
+    ),
+    {
+      message:
+        /The CodeQL Action does not support uploading multiple SARIF runs with the same category/,
+    },
+  );
+});
+
+test("throwIfCombineSarifFilesDisabled with an invalid GHES version", async (t) => {
+  await t.notThrowsAsync(
+    uploadLib.throwIfCombineSarifFilesDisabled(
+      [createMockSarif("abc", "def"), createMockSarif("abc", "def")],
+      createFeatures([]),
+      {
+        type: GitHubVariant.GHES,
+        version: "foobar",
+      },
+    ),
+  );
+});
+
+test("throwIfCombineSarifFilesDisabled with only 1 run", async (t) => {
+  await t.notThrowsAsync(
+    uploadLib.throwIfCombineSarifFilesDisabled(
+      [createMockSarif("abc", "def")],
+      createFeatures([Feature.DisableCombineSarifFiles]),
+      {
+        type: GitHubVariant.DOTCOM,
+      },
+    ),
+  );
+});
+
+test("throwIfCombineSarifFilesDisabled with distinct categories", async (t) => {
+  await t.notThrowsAsync(
+    uploadLib.throwIfCombineSarifFilesDisabled(
+      [createMockSarif("abc", "def"), createMockSarif("def", "def")],
+      createFeatures([Feature.DisableCombineSarifFiles]),
+      {
+        type: GitHubVariant.DOTCOM,
+      },
+    ),
+  );
+});
+
+test("throwIfCombineSarifFilesDisabled with distinct tools", async (t) => {
+  await t.notThrowsAsync(
+    uploadLib.throwIfCombineSarifFilesDisabled(
+      [createMockSarif("abc", "abc"), createMockSarif("abc", "def")],
+      createFeatures([Feature.DisableCombineSarifFiles]),
+      {
+        type: GitHubVariant.DOTCOM,
+      },
+    ),
+  );
+});
+
+test("shouldConsiderConfigurationError correctly detects configuration errors", (t) => {
+  const error1 = [
+    "CodeQL analyses from advanced configurations cannot be processed when the default setup is enabled",
+  ];
+  t.true(uploadLib.shouldConsiderConfigurationError(error1));
+
+  const error2 = [
+    "rejecting delivery as the repository has too many logical alerts",
+  ];
+  t.true(uploadLib.shouldConsiderConfigurationError(error2));
+
+  // We fail cases where we get > 1 error messages back
+  const error3 = [
+    "rejecting delivery as the repository has too many alerts",
+    "extra error message",
+  ];
+  t.false(uploadLib.shouldConsiderConfigurationError(error3));
+});
+
+test("shouldConsiderInvalidRequest returns correct recognises processing errors", (t) => {
+  const error1 = [
+    "rejecting SARIF",
+    "an invalid URI was provided as a SARIF location",
+  ];
+  t.true(uploadLib.shouldConsiderInvalidRequest(error1));
+
+  const error2 = [
+    "locationFromSarifResult: expected artifact location",
+    "an invalid URI was provided as a SARIF location",
+  ];
+  t.true(uploadLib.shouldConsiderInvalidRequest(error2));
+
+  // We expect ALL errors to be of processing errors, for the outcome to be classified as
+  // an invalid SARIF upload error.
+  const error3 = [
+    "could not convert rules: invalid security severity value, is not a number",
+    "an unknown error occurred",
+  ];
+  t.false(uploadLib.shouldConsiderInvalidRequest(error3));
 });
 
 function createMockSarif(id?: string, tool?: string) {

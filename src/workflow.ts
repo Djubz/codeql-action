@@ -7,9 +7,12 @@ import * as yaml from "js-yaml";
 
 import * as api from "./api-client";
 import { CodeQL } from "./codeql";
-import { EnvVar } from "./environment";
 import { Logger } from "./logging";
-import { getRequiredEnvParam, isInTestMode } from "./util";
+import {
+  getRequiredEnvParam,
+  getTestingEnvironment,
+  isInTestMode,
+} from "./util";
 
 export interface WorkflowJobStep {
   name?: string;
@@ -45,37 +48,6 @@ export interface Workflow {
   name?: string;
   jobs?: { [key: string]: WorkflowJob };
   on?: string | string[] | WorkflowTriggers;
-}
-
-const GLOB_PATTERN = new RegExp("(\\*\\*?)");
-
-function escapeRegExp(string) {
-  return string.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"); // $& means the whole matched string
-}
-
-function patternToRegExp(value) {
-  return new RegExp(
-    `^${value
-      .toString()
-      .split(GLOB_PATTERN)
-      .reduce(function (arr, cur) {
-        if (cur === "**") {
-          arr.push(".*?");
-        } else if (cur === "*") {
-          arr.push("[^/]*?");
-        } else if (cur) {
-          arr.push(escapeRegExp(cur));
-        }
-        return arr;
-      }, [])
-      .join("")}$`,
-  );
-}
-
-// this function should return true if patternA is a superset of patternB
-// e.g: * is a superset of main-* but main-* is not a superset of *.
-export function patternIsSuperset(patternA: string, patternB: string): boolean {
-  return patternToRegExp(patternA).test(patternB);
 }
 
 export interface CodedError {
@@ -389,10 +361,7 @@ function getInputOrThrow(
  * This allows us to test workflow parsing functionality as a CodeQL Action PR check.
  */
 function getAnalyzeActionName() {
-  if (
-    isInTestMode() ||
-    process.env[EnvVar.TESTING_ENVIRONMENT] === "codeql-action-pr-checks"
-  ) {
+  if (isInTestMode() || getTestingEnvironment() === "codeql-action-pr-checks") {
     return "./analyze";
   } else {
     return "github/codeql-action/analyze";

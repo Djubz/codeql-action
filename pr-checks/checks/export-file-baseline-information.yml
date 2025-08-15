@@ -1,6 +1,7 @@
 name: "Export file baseline information"
 description: "Tests that file baseline information is exported when the feature is enabled"
 versions: ["nightly-latest"]
+installGo: "true"
 env:
   CODEQL_ACTION_SUBLANGUAGE_FILE_COVERAGE: true
 steps:
@@ -10,6 +11,7 @@ steps:
       languages: javascript
       tools: ${{ steps.prepare-test.outputs.tools-url }}
   - uses: ./../action/.github/actions/setup-swift
+    if: runner.os == 'macOS'
     with:
       codeql-path: ${{ steps.init.outputs.codeql-path }}
   - name: Build code
@@ -19,7 +21,7 @@ steps:
     with:
       output: "${{ runner.temp }}/results"
   - name: Upload SARIF
-    uses: actions/upload-artifact@v3
+    uses: actions/upload-artifact@v4
     with:
       name: with-baseline-information-${{ matrix.os }}-${{ matrix.version }}.sarif.json
       path: "${{ runner.temp }}/results/javascript.sarif"
@@ -29,7 +31,7 @@ steps:
     run: |
       cd "$RUNNER_TEMP/results"
       expected_baseline_languages="c csharp go java kotlin javascript python ruby"
-      if [[ $RUNNER_OS != "Windows" ]]; then
+      if [[ $RUNNER_OS == "macOS" ]]; then
         expected_baseline_languages+=" swift"
       fi
 

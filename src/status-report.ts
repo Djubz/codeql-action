@@ -5,16 +5,19 @@ import * as core from "@actions/core";
 import {
   getWorkflowEventName,
   getOptionalInput,
-  getRef,
   getWorkflowRunID,
   getWorkflowRunAttempt,
   getActionVersion,
   getRequiredInput,
+  isSelfHostedRunner,
 } from "./actions-util";
 import { getAnalysisKey, getApiClient } from "./api-client";
 import { type Config } from "./config-utils";
+import { DocUrl } from "./doc-url";
 import { EnvVar } from "./environment";
+import { getRef } from "./git-utils";
 import { Logger } from "./logging";
+import { getRepositoryNwo } from "./repository";
 import {
   ConfigurationError,
   isHTTPError,
@@ -25,6 +28,8 @@ import {
   DiskUsage,
   assertNever,
   BuildMode,
+  getErrorMessage,
+  getTestingEnvironment,
 } from "./util";
 
 export enum ActionName {
@@ -49,6 +54,13 @@ export function isFirstPartyAnalysis(actionName: ActionName): boolean {
     return true;
   }
   return process.env[EnvVar.INIT_ACTION_HAS_RUN] === "true";
+}
+
+/**
+ * @returns true if the analysis is considered to be third party.
+ */
+export function isThirdPartyAnalysis(actionName: ActionName): boolean {
+  return !isFirstPartyAnalysis(actionName);
 }
 
 export type ActionStatus =
@@ -266,10 +278,10 @@ export async function createStatusReportBase(
     const runnerOs = getRequiredEnvParam("RUNNER_OS");
     const codeQlCliVersion = getCachedCodeQlVersion();
     const actionRef = process.env["GITHUB_ACTION_REF"] || "";
-    const testingEnvironment = process.env[EnvVar.TESTING_ENVIRONMENT] || "";
+    const testingEnvironment = getTestingEnvironment();
     // re-export the testing environment variable so that it is available to subsequent steps,
     // even if it was only set for this step
-    if (testingEnvironment !== "") {
+    if (testingEnvironment) {
       core.exportVariable(EnvVar.TESTING_ENVIRONMENT, testingEnvironment);
     }
     const isSteadyStateDefaultSetupRun =
@@ -292,7 +304,7 @@ export async function createStatusReportBase(
       started_at: workflowStartedAt,
       status,
       steady_state_default_setup: isSteadyStateDefaultSetupRun,
-      testing_environment: testingEnvironment,
+      testing_environment: testingEnvironment || "",
       workflow_name: workflowName,
       workflow_run_attempt: workflowRunAttempt,
       workflow_run_id: workflowRunID,
@@ -338,7 +350,9 @@ export async function createStatusReportBase(
       // Values other than X86, X64, ARM, or ARM64 are discarded server side
       statusReport.runner_arch = process.env["RUNNER_ARCH"];
     }
-    if (runnerOs === "Windows" || runnerOs === "macOS") {
+    if (!(runnerOs === "Linux" && isSelfHostedRunner())) {
+      // We do not report the release number for Linux self-hosted runners
+      // because the custom build suffix may be private customer information.
       statusReport.runner_os_release = os.release();
     }
     if (codeQlCliVersion !== undefined) {
@@ -388,21 +402,19 @@ export async function sendStatusReport<S extends StatusReportBase>(
     return;
   }
 
-  const nwo = getRequiredEnvParam("GITHUB_REPOSITORY");
-  const [owner, repo] = nwo.split("/");
+  const nwo = getRepositoryNwo();
   const client = getApiClient();
 
   try {
     await client.request(
       "PUT /repos/:owner/:repo/code-scanning/analysis/status",
       {
-        owner,
-        repo,
+        owner: nwo.owner,
+        repo: nwo.repo,
         data: statusReportJSON,
       },
     );
   } catch (e) {
-    console.log(e);
     if (isHTTPError(e)) {
       switch (e.status) {
         case 403:
@@ -414,7 +426,7 @@ export async function sendStatusReport<S extends StatusReportBase>(
               'Workflows triggered by Dependabot on the "push" event run with read-only access. ' +
                 "Uploading Code Scanning results requires write access. " +
                 'To use Code Scanning with Dependabot, please ensure you are using the "pull_request" event for this workflow and avoid triggering on the "push" event for Dependabot branches. ' +
-                "See https://docs.github.com/en/code-security/secure-coding/configuring-code-scanning#scanning-on-push for more information on how to configure these events.",
+                `See ${DocUrl.SCANNING_ON_PUSH} for more information on how to configure these events.`,
             );
           } else {
             core.warning(e.message);
@@ -439,7 +451,9 @@ export async function sendStatusReport<S extends StatusReportBase>(
     // something else has gone wrong and the request/response will be logged by octokit
     // it's possible this is a transient error and we should continue scanning
     core.warning(
-      "An unexpected error occurred when sending code scanning status report.",
+      `An unexpected error occurred when sending code scanning status report: ${getErrorMessage(
+        e,
+      )}`,
     );
   }
 }

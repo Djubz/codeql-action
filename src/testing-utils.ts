@@ -14,6 +14,7 @@ import * as defaults from "./defaults.json";
 import {
   CodeQLDefaultVersionInfo,
   Feature,
+  featureConfig,
   FeatureEnablement,
 } from "./feature-flags";
 import { Logger } from "./logging";
@@ -151,18 +152,22 @@ export function getRecordingLogger(messages: LoggedMessage[]): Logger {
   return {
     debug: (message: string) => {
       messages.push({ type: "debug", message });
+      // eslint-disable-next-line no-console
       console.debug(message);
     },
     info: (message: string) => {
       messages.push({ type: "info", message });
+      // eslint-disable-next-line no-console
       console.info(message);
     },
     warning: (message: string | Error) => {
       messages.push({ type: "warning", message });
+      // eslint-disable-next-line no-console
       console.warn(message);
     },
     error: (message: string | Error) => {
       messages.push({ type: "error", message });
+      // eslint-disable-next-line no-console
       console.error(message);
     },
     isDebug: () => true,
@@ -176,6 +181,21 @@ export function mockFeatureFlagApiEndpoint(
   responseStatusCode: number,
   response: { [flagName: string]: boolean },
 ) {
+  stubFeatureFlagApiEndpoint(() => ({
+    status: responseStatusCode,
+    messageIfError: "some error message",
+    data: response,
+  }));
+}
+
+/** Stub the HTTP request to the feature flags enablement API endpoint. */
+export function stubFeatureFlagApiEndpoint(
+  responseFunction: (params: any) => {
+    status: number;
+    messageIfError?: string;
+    data: { [flagName: string]: boolean };
+  },
+) {
   // Passing an auth token is required, so we just use a dummy value
   const client = github.getOctokit("123");
 
@@ -184,16 +204,23 @@ export function mockFeatureFlagApiEndpoint(
   const optInSpy = requestSpy.withArgs(
     "GET /repos/:owner/:repo/code-scanning/codeql-action/features",
   );
-  if (responseStatusCode < 300) {
-    optInSpy.resolves({
-      status: responseStatusCode,
-      data: response,
-      headers: {},
-      url: "GET /repos/:owner/:repo/code-scanning/codeql-action/features",
-    });
-  } else {
-    optInSpy.throws(new HTTPError("some error message", responseStatusCode));
-  }
+
+  optInSpy.callsFake((_route, params) => {
+    const response = responseFunction(params);
+    if (response.status < 300) {
+      return Promise.resolve({
+        status: response.status,
+        data: response.data,
+        headers: {},
+        url: "GET /repos/:owner/:repo/code-scanning/codeql-action/features",
+      });
+    } else {
+      throw new HTTPError(
+        response.messageIfError || "default stub error message",
+        response.status,
+      );
+    }
+  });
 
   sinon.stub(apiClient, "getApiClient").value(() => client);
 }
@@ -259,6 +286,13 @@ export function createFeatures(enabledFeatures: Feature[]): FeatureEnablement {
   };
 }
 
+export function initializeFeatures(initialValue: boolean) {
+  return Object.keys(featureConfig).reduce((features, key) => {
+    features[key] = initialValue;
+    return features;
+  }, {});
+}
+
 /**
  * Mocks the API for downloading the bundle tagged `tagName`.
  *
@@ -282,27 +316,34 @@ export function mockBundleDownloadApi({
     process.platform === "win32"
       ? "win64"
       : process.platform === "linux"
-      ? "linux64"
-      : "osx64";
+        ? "linux64"
+        : "osx64";
 
   const baseUrl = apiDetails?.url ?? "https://example.com";
-  const relativeUrl = apiDetails
-    ? `/${repo}/releases/download/${tagName}/codeql-bundle${
-        platformSpecific ? `-${platform}` : ""
-      }.tar.gz`
-    : `/download/${tagName}/codeql-bundle.tar.gz`;
 
-  nock(baseUrl)
-    .get(relativeUrl)
-    .replyWithFile(
-      200,
-      path.join(
-        __dirname,
-        `/../src/testdata/codeql-bundle${isPinned ? "-pinned" : ""}.tar.gz`,
-      ),
-    );
+  const bundleUrls = ["tar.gz", "tar.zst"].map((extension) => {
+    const relativeUrl = apiDetails
+      ? `/${repo}/releases/download/${tagName}/codeql-bundle${
+          platformSpecific ? `-${platform}` : ""
+        }.${extension}`
+      : `/download/${tagName}/codeql-bundle.${extension}`;
 
-  return `${baseUrl}${relativeUrl}`;
+    nock(baseUrl)
+      .get(relativeUrl)
+      .replyWithFile(
+        200,
+        path.join(
+          __dirname,
+          `/../src/testdata/codeql-bundle${
+            isPinned ? "-pinned" : ""
+          }.${extension}`,
+        ),
+      );
+    return `${baseUrl}${relativeUrl}`;
+  });
+
+  // Choose an arbitrary URL to return
+  return bundleUrls[0];
 }
 
 export function createTestConfig(overrides: Partial<Config>): Config {
@@ -324,9 +365,11 @@ export function createTestConfig(overrides: Partial<Config>): Config {
       augmentationProperties: {
         packsInputCombines: false,
         queriesInputCombines: false,
+        extraQueryExclusions: [],
       },
       trapCaches: {},
       trapCacheDownloadTime: 0,
+      dependencyCachingEnabled: false,
     },
     overrides,
   );

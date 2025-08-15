@@ -1,4 +1,5 @@
 #!/bin/bash
+set -eo pipefail
 
 gcc -o main main.c
 
@@ -8,7 +9,9 @@ javac Main.java
 
 go build main.go
 
-if [[ "$OSTYPE" == "darwin"* || "$OSTYPE" == "linux-gnu"* ]]; then
+# Not all platforms support Swift
+if [[ "$OSTYPE" == "darwin"* ]]; then
+    echo "Compiling Swift"
     swift build
 fi
 

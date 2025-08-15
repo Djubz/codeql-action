@@ -1,5 +1,11 @@
 name: "Remote config file"
 description: "Checks that specifying packages using only a config file works"
+operatingSystems:
+  - ubuntu
+versions:
+  - linked
+  - nightly-latest
+installGo: "true"
 steps:
   - uses: ./../action/init
     with:

@@ -83,6 +83,9 @@ inputs:
   queries:
     description: Comma-separated list of additional queries to run. By default, this overrides the same setting in a configuration file; prefix with "+" to use both sets of queries.
     required: false
+  quality-queries:
+    description: '[Internal] Comma-separated list of code quality queries to run.'
+    required: false
   packs:
     description: >-
       Comma-separated list of packs to run. Reference a pack in the format `scope/name[@version]`. If `version` is not
@@ -136,9 +139,15 @@ inputs:
     description: >-
       Explicitly enable or disable TRAP caching rather than respecting the feature flag for it.
     required: false
+  dependency-caching:
+    description: >-
+      Explicitly enable or disable caching of project build dependencies.
+    required: false
 outputs:
   codeql-path:
     description: The path of the CodeQL binary used for analysis
+  codeql-version:
+    description: The version of the CodeQL binary used for analysis
 runs:
   using: node20
   main: '../lib/init-action.js'
